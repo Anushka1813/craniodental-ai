@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
@@ -710,4 +709,4 @@ with right_col:
             report_height = 680
         elif res.get("has_skull"):
             report_height = 600
-    components.html(build_report_html(res), height=report_height, scrolling=True)
+    st.iframe(build_report_html(res), height=report_height)
