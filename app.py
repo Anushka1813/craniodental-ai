@@ -16,6 +16,8 @@ import zipfile
 import nibabel as nib
 import time
 import pydicom
+from pydicom.dataset import FileMetaDataset
+from pydicom.uid import ImplicitVRLittleEndian
 
 from model import DentalMultiTaskNet
 from core.model import DecoupledForensicHead
@@ -211,25 +213,37 @@ dental_transform = transforms.Compose([
 
 def load_dicom_series(dcm_paths):
     slices = []
+    last_error = None
+
     for p in dcm_paths:
         try:
-            ds = pydicom.dcmread(p)
-            if hasattr(ds, 'pixel_array'):
-                slices.append((ds, p))
-        except Exception:
+            ds = pydicom.dcmread(p, force=True)
+            if not getattr(ds, 'file_meta', None):
+                ds.file_meta = FileMetaDataset()
+            if 'TransferSyntaxUID' not in ds.file_meta:
+                ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+            if 'PixelData' in ds:
+                arr = ds.pixel_array.astype(np.float32)
+                slices.append((ds, arr, p))
+        except Exception as e:
+            last_error = f"{os.path.basename(p)}: {type(e).__name__}: {e}"
             continue
 
     if not slices:
-        raise ValueError("No valid DICOM (.dcm) slices found.")
+        detail = f" Last error: {last_error}" if last_error else ""
+        raise ValueError(f"No valid DICOM (.dcm) slices found.{detail}")
 
     if len(slices) == 1:
-        arr = slices[0][0].pixel_array.astype(np.float32)
+        ds, arr, _ = slices[0]
+        slope = float(getattr(ds, 'RescaleSlope', 1.0))
+        intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+        arr = arr * slope + intercept
         if arr.ndim == 2:
             return torch.tensor(arr, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         return torch.tensor(arr, dtype=torch.float32).unsqueeze(0)
 
     def sort_key(item):
-        ds, path = item
+        ds, _, path = item
         if hasattr(ds, 'ImagePositionPatient'):
             return float(ds.ImagePositionPatient[2])
         if hasattr(ds, 'SliceLocation'):
@@ -240,14 +254,17 @@ def load_dicom_series(dcm_paths):
 
     slices.sort(key=sort_key)
 
+    first_arr = slices[0][1]
+    if first_arr.ndim > 2:
+        first_arr = first_arr[0]
+    target_h, target_w = first_arr.shape[:2]
+
     arrays = []
-    target_shape = slices[0][0].pixel_array.shape
-    for ds, _ in slices:
-        arr = ds.pixel_array.astype(np.float32)
+    for ds, arr, _ in slices:
         if arr.ndim > 2:
             arr = arr[0]
-        if arr.shape != target_shape[:2]:
-            arr = cv2.resize(arr, (target_shape[1], target_shape[0]))
+        if arr.shape != (target_h, target_w):
+            arr = cv2.resize(arr, (target_w, target_h))
         slope = float(getattr(ds, 'RescaleSlope', 1.0))
         intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
         arr = arr * slope + intercept
@@ -272,6 +289,8 @@ def process_skull_inputs(uploaded_files):
                 zf.extractall(extract_dir)
             extracted_files = []
             for root, _, files in os.walk(extract_dir):
+                if "__MACOSX" in root:
+                    continue
                 for fname in files:
                     if not fname.startswith('.'):
                         extracted_files.append(os.path.join(root, fname))
@@ -280,6 +299,12 @@ def process_skull_inputs(uploaded_files):
         dcm_paths = [p for p in saved_paths if p.lower().endswith('.dcm')]
         nii_paths = [p for p in saved_paths if p.lower().endswith(('.nii', '.nii.gz'))]
         pt_paths = [p for p in saved_paths if p.lower().endswith('.pt')]
+
+        if not dcm_paths and not nii_paths and not pt_paths and saved_paths:
+            dcm_paths = [
+                p for p in saved_paths
+                if not p.lower().endswith(('.txt', '.csv', '.json', '.xml', '.pdf', '.png', '.jpg', '.jpeg'))
+            ]
 
         if dcm_paths:
             scan_tensor = load_dicom_series(dcm_paths)
@@ -482,7 +507,6 @@ def build_report_html(results):
 if "results" not in st.session_state:
     st.session_state.results = None
 
-# ================= SIDEBAR =================
 with st.sidebar:
     st.markdown('<div class="brand-logo">💀🦷 CRANIO<span>DENT</span></div>', unsafe_allow_html=True)
     exec_block = ""
@@ -497,7 +521,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-# ================= MAIN WORKSPACE =================
 st.markdown("""
 <div class="ws-header">
     <h1>Craniofacial &amp; Dental Diagnostic Workstation</h1>
