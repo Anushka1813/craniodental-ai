@@ -196,14 +196,21 @@ def load_models():
     )
     dental_model.eval()
 
-    skull_model = DecoupledForensicHead().to(device)
-    skull_model.load_state_dict(
+    skull_age_model = DecoupledForensicHead().to(device)
+    skull_age_model.load_state_dict(
         torch.load("weights/age_expert_engine_2d.pth", map_location=device, weights_only=True),
         strict=False
     )
-    skull_model.eval()
+    skull_age_model.eval()
 
-    return dental_model, skull_model
+    skull_sex_model = DecoupledForensicHead().to(device)
+    skull_sex_model.load_state_dict(
+        torch.load("weights/sex_expert_engine_2d.pth", map_location=device, weights_only=True),
+        strict=False
+    )
+    skull_sex_model.eval()
+
+    return dental_model, skull_age_model, skull_sex_model
 
 dental_transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -615,7 +622,7 @@ with left_col:
                 try:
                     with st.spinner("Executing independent forensic inference..."):
                         start_time = time.time()
-                        dental_model, skull_model = load_models()
+                        dental_model, skull_age_model, skull_sex_model = load_models()
                         results = {'has_dental': False, 'has_skull': False}
 
                         if has_dental:
@@ -673,7 +680,8 @@ with left_col:
                             skull_tensor = skull_tensor.to(device)
 
                             with torch.no_grad():
-                                s_age_norm, s_sex_logits = skull_model(skull_tensor)
+                                s_age_norm, _ = skull_age_model(skull_tensor)
+                                _, s_sex_logits = skull_sex_model(skull_tensor)
                                 s_age = s_age_norm.item() * 100.0
                                 s_prob = torch.sigmoid(s_sex_logits).item()
 
